@@ -1,0 +1,69 @@
+# Builds and signs the release APK.
+# A tag v<versionName> makes a GitHub release with the APK. A manual run keeps the APK as an artifact.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CERT_SHA256: f1ef44b2f8a84ed57c3e376ea8aebe28f0a748f5f5ec07d66300bf37eb9f648a
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Test
+        run: ./gradlew :protocol:test :android:testDebugUnitTest
+
+      - name: Write the encrypted release key
+        env:
+          RELEASE_KEY_ENC: ${{ secrets.RELEASE_KEY_ENC }}
+        run: |
+          if [ -z "$RELEASE_KEY_ENC" ]; then
+            echo "::error::The secret RELEASE_KEY_ENC is not set."
+            exit 1
+          fi
+          mkdir -p keystore-backup
+          printf '%s' "$RELEASE_KEY_ENC" | base64 -d > keystore-backup/release-key.enc
+
+      - name: Build the signed release
+        env:
+          HDSENDER_KEY_PASSPHRASE: ${{ secrets.HDSENDER_KEY_PASSPHRASE }}
+        run: ./gradlew :android:assembleRelease
+
+      - name: Check the APK name and the certificate
+        run: |
+          apk=$(ls android/build/outputs/apk/release/hd-sender-*.apk)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$(basename "$apk")" != "hd-sender-${GITHUB_REF_NAME#v}.apk" ]; then
+            echo "::error::The tag $GITHUB_REF_NAME does not agree with $(basename "$apk")."
+            exit 1
+          fi
+          build_tools=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$build_tools/apksigner" verify --print-certs "$apk" | tee certs.txt
+          grep -q "SHA-256 digest: $CERT_SHA256" certs.txt
+          echo "APK=$apk" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hd-sender-apk
+          path: ${{ env.APK }}
+
+      - name: Make the GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$APK" --title "HD Sender ${GITHUB_REF_NAME#v}" --generate-notes

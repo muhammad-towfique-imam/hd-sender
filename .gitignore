@@ -1,0 +1,10 @@
+.gradle/
+build/
+local.properties
+.kotlin/
+*.iml
+keystore/
+keystore.properties
+.env
+!gradle/wrapper/gradle-wrapper.jar
+keystore-backup/
